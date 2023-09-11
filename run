@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+# Builds EqBench programs and compares them,
+# returns results how much successful was the comparison.
+#
+# References:
+# - EqBench paper:
+#   https://people.ece.ubc.ca/mjulia/publications/EQBench_2021.pdf
+# - EqBench benchmarks: https://osf.io/93s5b/
+# - EqBench repo: https://github.com/shrBadihi/EqBench
+# - useful info from author of EqBench:
+#   https://github.com/shrBadihi/EqBench/issues/2
+#
+# Steps to analyse DiffKemp equivalence checking using an EqBench benchmark:
+# 1. download/clone the benchmark (EqBench folder)
+#   from https://github.com/shrBadihi/EqBench (contains fixes)
+# 2. Run this script:
+#   `EqBench-workflow/run <path-to-EqBench>`
+#   - it creates snapshots of programs and compares them
+#   - the script informs about progress
+# 3. Detailed results of the analysis are saved in
+#   <output-dir>/eqbench-results.csv (default `output-dir` is EqBench-results),
+#   you can filter the result for eg. with `grep`,
+#   the file is in csv format with headers
+#   `type;benchmark;program;expected;result;correct`
+#   - `type`: type of EqBench program
+#     - `aggregated`: an aggregated form of all other subfolders for a project
+#       FIXME file contains functions which are not changed
+#         -> do not evaluate them
+#     - `function-level`: for projects/programs which contains change in
+#       a single function the comparison is done on function-level
+#       (compared function is the one which contains changes),
+#   - `benchmark`, `program`: represents name of benchmark and program,
+#   - `expected`: represents expected result of comparison (Eq/Neq)
+#   - `result`: represents result of DiffKemp comparison (Eq/Neq),
+#     for aggregated type if comparison was incorrect contains info
+#     about which functions were evaluated as Eq and which as Neq,
+#   - `correct`: True if evaluation was correct, else False,
+
+from argparse import ArgumentParser
+from pathlib import Path
+from progressbar import ProgressBar
+import json
+import re
+import shutil
+import subprocess
+import yaml
+
+# regex for getting info from diffkemp report stat
+REGEX_TOTAL = re.compile("^Total symbols: *(\\d+)", flags=re.MULTILINE)
+REGEX_EQUAL = re.compile("^Equal: *(\\d+)", flags=re.MULTILINE)
+REGEX_NEQUAL = re.compile("^Not equal: *(\\d+)", flags=re.MULTILINE)
+
+BENCHMARK_DIR = "benchmarks"
+BUILD_DIR = "benchmarks-build"
+COMPARE_DIR = "benchmarks-compare"
+
+# Name of file which describes EqBench programs.
+DESCRIPTION_FILE_NAME = "C-Desc.json"
+
+
+class ProgramInfo:
+    """Information about EqBench program."""
+    def __init__(self, src_dir):
+        """:param src_dir: Path to EqBench program."""
+        with open(Path(src_dir, DESCRIPTION_FILE_NAME), "r") as file:
+            info = json.load(file)
+        self.fun_to_compare = info["function name"]
+
+    @staticmethod
+    def exists(src_dir):
+        """Checks if information about the EqBench program exists.
+        If it does not exists than it is program which
+        contains aggregation of all programs/changes for the benchmark.
+        :param src_dir: Path to EqBench program."""
+        return Path(src_dir, DESCRIPTION_FILE_NAME).exists()
+
+
+class EqBenchRun:
+    """
+    Class for running analysis of DiffKemp equivalence checking
+    using an EqBench benchmark.
+    """
+    def __init__(self, args):
+        self.src_dir = Path(args.source_dir, BENCHMARK_DIR)
+        self.output_dir = Path(args.output_dir)
+        self.build_dir = Path(args.output_dir, BUILD_DIR)
+        self.cmp_dir = Path(args.output_dir, COMPARE_DIR)
+        self.results_file_path = Path(self.output_dir, "eqbench-results.csv")
+        self._run()
+
+    def _run(self):
+        # todo parallel run to speed things up?
+        if self.output_dir.exists():
+            shutil.rmtree(self.output_dir)
+        # Creating snapshots
+        print("1) Creating snapshots:")
+        print("\ta) Creating old snapshots:")
+        self._create_snapshots(new=False)
+        print("\tb) Creating new snapshots:")
+        self._create_snapshots(new=True)
+
+        # Comparing snapshots and writing results to file
+        print("2) Comparing snapshots")
+        if self.cmp_dir.exists():
+            shutil.rmtree(self.cmp_dir)
+        with open(self.results_file_path, "w") as results_file:
+            print("type;benchmark;program;expected;result;correct",
+                  file=results_file)
+            print("\ta) Comparing Eq snapshots")
+            self._compare_snapshots(neq=False, results_file=results_file)
+            print("\tb) Comparing Neq snapshots")
+            self._compare_snapshots(neq=True, results_file=results_file)
+        print(f"\n\nResults are written to {str(self.results_file_path)}\n\n")
+
+    def _create_snapshots(self, new):
+        """Creates snapshots for benchmarks programs.
+        :param new: If true creates snapshots of new versions of programs,
+                    else of old versions.
+        """
+        # some files are name old.c/new.c and some oldV.c/newV.c
+        # TODO count of programs specified in paper and located in dir
+        # does not match
+        name = "old" if not new else "new"
+        files = list(Path(self.src_dir).glob(f"**/{name}*.c"))
+        progressbar = ProgressBar()
+        for file in progressbar(files):
+            # getting relative path to program folder
+            # (benchmark/program/eq_or_neq)
+            rel_path_to_file = file.relative_to(self.src_dir).parent
+            output_path = self.build_dir / rel_path_to_file / name
+            output_path.mkdir(parents=True, exist_ok=True)
+            self._build(str(file), str(output_path))
+
+    def _build(self, file, output_dir):
+        """Creates snapshot of C `file` and saves it to `output_dir`."""
+        build_command = [
+            "bin/diffkemp",
+            "build",
+            file,
+            output_dir
+        ]
+        subprocess.check_call(build_command, stdout=subprocess.DEVNULL)
+
+    def _compare_snapshots(self, neq, results_file):
+        """Compares benchmarks snapshots of old and new programs version.
+        :param neq: If true compares not equal programs,
+                    else compares equal programs.
+        :param results_file: FD of file to write results of evaluation.
+        """
+        expected_result = "Eq" if not neq else "Neq"
+        build_dirs = list(Path(self.build_dir).glob(f"**/{expected_result}"))
+        progressbar = ProgressBar()
+        for build_dir in progressbar(build_dirs):
+            self._compare_snapshot(build_dir, expected_result, results_file)
+
+    def _compare_snapshot(self, build_dir, expected_result, results_file):
+        """Compares two snapshots (old, new) using DiffKemp
+        and writes info about evaluation to `results_file`
+        :param build_dir: Path to dir containing old/new subdirs with
+                          program snapshots.
+        :param expected_result: Expected result - Eq/Neq.
+        :param results_file: FD to file to which to write results of eval.
+        """
+        old_build_dir = build_dir / "old"
+        new_build_dir = build_dir / "new"
+
+        src_dir = self.src_dir / build_dir.relative_to(self.build_dir)
+        # directory containing result of comparison
+        result_dir = self.cmp_dir / build_dir.relative_to(self.build_dir)
+        result_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        program_info = ProgramInfo(src_dir) if ProgramInfo.exists(src_dir) \
+            else None
+
+        # If EqBench program contains info about program, the program
+        # should contain change in only one function,
+        # get the name of function from the information about the program
+        # and compare only this function.
+        function = None
+        if program_info:
+            function = program_info.fun_to_compare
+
+        output = self._compare(str(old_build_dir), str(new_build_dir),
+                               str(result_dir), function=function)
+
+        result = AnalysisResult(program_info=program_info,
+                                expected_result=expected_result,
+                                old_build_dir=old_build_dir,
+                                result_dir=result_dir,
+                                output=output)
+
+        print(str(result), file=results_file)
+
+    def _compare(self, old_build_dir, new_build_dir, output_dir,
+                 function=None):
+        """Runs `diffkemp compare` command, returns output of the command.
+        :param function: Name of function to compare,
+                         if it is None than it compares all functions.
+        """
+        compare_command = [
+            "bin/diffkemp", "compare",
+            old_build_dir, new_build_dir,
+            "-o", output_dir,
+            "--report-stat",
+        ]
+        if function is not None:
+            compare_command.extend(["--function", function])
+        return subprocess.check_output(compare_command).decode("utf-8")
+
+
+class AnalysisResult:
+    """Result of evaluation of DiffKemp comparison of EqBench program."""
+    def __init__(self, program_info, expected_result, old_build_dir,
+                 result_dir, output):
+        self.expected_result = expected_result
+        self.program_info = program_info
+        self.old_build_dir = old_build_dir
+        self.result_dir = result_dir
+        self.total_symbols = REGEX_TOTAL.search(output).group(1)
+        self.eq_symbols = REGEX_EQUAL.search(output).group(1)
+        self.neq_symbols = REGEX_NEQUAL.search(output).group(1)
+        self.benchmark_type = "function-level" if self.program_info \
+            else "aggregated"
+        self.benchmark_name, self.program_name = \
+            str(result_dir).split("/")[-3:-1]
+
+    def __str__(self):
+        # `function-level` type has only one changed function in the file
+        # `aggregated` contains multiple changed functions
+        if self.total_symbols == self.eq_symbols:
+            result = "Eq"
+        elif self.total_symbols == self.neq_symbols:
+            result = "Neq"
+        else:
+            # some where evaluated as equal some as non-equal
+            neq_functions = self._get_neq_funs()
+            all_functions = self._get_all_funs()
+            eq_functions = list(filter(
+                    lambda fun: fun not in neq_functions, all_functions))
+            result = f"{self.eq_symbols} Eq {eq_functions}, " + \
+                     f"{self.neq_symbols} Neq {neq_functions}"
+        correct = str(True if result == self.expected_result else False)
+        result_repre = [
+            self.benchmark_type,
+            self.benchmark_name, self.program_name,
+            self.expected_result,
+            result, correct,
+        ]
+        return ";".join(result_repre)
+
+    def _get_neq_funs(self):
+        """
+        Returns list of functions which were evaluated by DiffKemp as
+        non-equal functions.
+        """
+        with open(self.result_dir / "diffkemp-out.yaml", "r") as file:
+            yaml_result = yaml.safe_load(file)
+        return [function["function"] for function in yaml_result["results"]]
+
+    def _get_all_funs(self):
+        """Returns list of all functions for an EqBench program."""
+        with open(Path(self.old_build_dir, "snapshot.yaml"), "r") as file:
+            snapshot_yaml = yaml.safe_load(file)
+        return [function["name"] for function in snapshot_yaml[0]["list"]]
+
+
+if __name__ == "__main__":
+    parser = ArgumentParser(
+        description="Builds EqBench programs and compares them, " +
+                    "returns results how much successful was the comparison.")
+    parser.add_argument("source_dir", nargs="?", default="EqBench",
+                        help="EqBench source directory")
+    parser.add_argument("-o", "--output-dir", default="EqBench-results",
+                        help="output directory for the analysis")
+    args = parser.parse_args()
+    EqBenchRun(args)
