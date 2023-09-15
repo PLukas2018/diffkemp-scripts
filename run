@@ -85,19 +85,21 @@ class EqBenchRun:
         self.output_dir = Path(args.output_dir)
         self.build_dir = Path(args.output_dir, BUILD_DIR)
         self.cmp_dir = Path(args.output_dir, COMPARE_DIR)
+        self.only_compare = args.only_compare
         self.results_file_path = Path(self.output_dir, "eqbench-results.csv")
         self._run()
 
     def _run(self):
         # todo parallel run to speed things up?
-        if self.output_dir.exists():
-            shutil.rmtree(self.output_dir)
-        # Creating snapshots
-        print("1) Creating snapshots:")
-        print("\ta) Creating old snapshots:")
-        self._create_snapshots(new=False)
-        print("\tb) Creating new snapshots:")
-        self._create_snapshots(new=True)
+        if not self.only_compare:
+            if self.output_dir.exists():
+                shutil.rmtree(self.output_dir)
+            # Creating snapshots
+            print("1) Creating snapshots:")
+            print("\ta) Creating old snapshots:")
+            self._create_snapshots(new=False)
+            print("\tb) Creating new snapshots:")
+            self._create_snapshots(new=True)
 
         # Comparing snapshots and writing results to file
         print("2) Comparing snapshots")
@@ -272,5 +274,9 @@ if __name__ == "__main__":
                         help="EqBench source directory")
     parser.add_argument("-o", "--output-dir", default="EqBench-results",
                         help="output directory for the analysis")
+    parser.add_argument("--only-compare", action="store_true",
+                        help="only runs comparison, expects that " +
+                        "the programs are already build " +
+                        "and located in `output_dir`")
     args = parser.parse_args()
     EqBenchRun(args)
