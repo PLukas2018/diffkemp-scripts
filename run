@@ -23,7 +23,7 @@
 #   <output-dir>/eqbench-results.csv (default `output-dir` is EqBench-results),
 #   you can filter the result for eg. with `grep`,
 #   the file is in csv format with headers
-#   `type;benchmark;program;expected;result;correct`
+#   `type;benchmark;program;expected;result;correct;changes`
 #   - `type`: type of EqBench program
 #     - `aggregated`: an aggregated form of all other subfolders for a project
 #       FIXME file contains functions which are not changed
@@ -37,6 +37,7 @@
 #     for aggregated type if comparison was incorrect contains info
 #     about which functions were evaluated as Eq and which as Neq,
 #   - `correct`: True if evaluation was correct, else False,
+#   - `changes`: list of changes which were done in the program.
 
 from argparse import ArgumentParser
 import csv
@@ -69,6 +70,17 @@ class ProgramInfo:
         with open(Path(src_dir, DESCRIPTION_FILE_NAME), "r") as file:
             info = json.load(file)
         self.fun_to_compare = info["function name"]
+        self.changes = info["changes"]
+
+    def get_description(self):
+        """Returns string containing list of changes."""
+        changes_description = []
+        for change in self.changes:
+            change_description = f"{change['change type']} " + \
+                                 f"({change['change operation']})"
+            if change_description not in changes_description:
+                changes_description.append(change_description)
+        return ", ".join(changes_description)
 
     @staticmethod
     def exists(src_dir):
@@ -112,7 +124,7 @@ class EqBenchRun:
         if self.cmp_dir.exists():
             shutil.rmtree(self.cmp_dir)
         with open(self.results_file_path, "w") as results_file:
-            print("type;benchmark;program;expected;result;correct",
+            print("type;benchmark;program;expected;result;correct;changes",
                   file=results_file)
             print("\ta) Comparing Eq snapshots")
             self._compare_snapshots(neq=False, results_file=results_file)
@@ -283,11 +295,14 @@ class AnalysisResult:
             result = f"{self.eq_symbols} Eq {eq_functions}, " + \
                      f"{self.neq_symbols} Neq {neq_functions}"
         correct = str(True if result == self.expected_result else False)
+        changes = self.program_info.get_description() if self.program_info \
+            else ""
         result_repre = [
             self.benchmark_type,
             self.benchmark_name, self.program_name,
             self.expected_result,
             result, correct,
+            changes
         ]
         return ";".join(result_repre)
 
