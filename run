@@ -26,8 +26,6 @@
 #   `type;benchmark;program;expected;result;correct;changes`
 #   - `type`: type of EqBench program
 #     - `aggregated`: an aggregated form of all other subfolders for a project
-#       FIXME file contains functions which are not changed
-#         -> do not evaluate them
 #     - `function-level`: for projects/programs which contains change in
 #       a single function the comparison is done on function-level
 #       (compared function is the one which contains changes),
@@ -61,6 +59,36 @@ COMPARE_DIR = "benchmarks-compare"
 
 # Name of file which describes EqBench programs.
 DESCRIPTION_FILE_NAME = "C-Desc.json"
+
+# Functions to ignore for aggregated programs because these functions
+# have not been changed and does not call function which was changed.
+# Dictionary
+# - keys being paths to version of program,
+# - values being list of functions to ignore
+AGGREGATED_FUNS_TO_IGNORE = {
+    "ej_hash/ej_hash/Neq": ["constructor"],
+    "ej_hash/ej_hash/Eq": ["constructor"],
+    "raytrace/raytrace/Neq": ["Vector3DConstructor",
+                              "Vector3DConstructor2",
+                              "SurfaceConstructor"],
+    "raytrace/raytrace/Eq": ["Vector3DConstructor",
+                             "Vector3DConstructor2",
+                             "SurfaceConstructor"],
+    "tcas/tcas/Neq": ["Own_Below_Threat", "Own_Above_Threat",
+                      "Inhibit_Biased_Climb", "ALIM"],
+    "tcas/tcas/Eq": ["Own_Below_Threat", "Own_Above_Threat",
+                     "Inhibit_Biased_Climb", "ALIM"],
+    "ell/ellProgram/Neq": ["SQR", "SIGN", "MAX", "MIN"],
+    "ell/ellProgram/Eq": ["SQR", "SIGN", "MAX", "MIN"],
+    "gam/gam/Neq": ["gammln"],
+    "gam/gam/Eq": ["gammln"],
+    "frenel/frenelProgram/Neq": ["getreal", "getimag", "constructor",
+                                 "constructor2", "assign", "assignObj", "plus",
+                                 "minus", "multiply", "divide"],
+    "frenel/frenelProgram/Eq": ["getreal", "getimag", "constructor",
+                                "constructor2", "assign", "assignObj", "plus",
+                                "minus", "multiply", "divide"],
+}
 
 
 class ProgramInfo:
@@ -287,13 +315,24 @@ class AnalysisResult:
         elif self.total_symbols == self.neq_symbols:
             result = "Neq"
         else:
-            # some where evaluated as equal some as non-equal
+            # Some evaluated functions were equal some non-equal
+            # (can contains functions which were supposed to be ignored),
+            # check eq and non-equal functions
+            # (ignore the ones which should not be evaluated).
             neq_functions = self._get_neq_funs()
             all_functions = self._get_all_funs()
             eq_functions = list(filter(
                     lambda fun: fun not in neq_functions, all_functions))
-            result = f"{self.eq_symbols} Eq {eq_functions}, " + \
-                     f"{self.neq_symbols} Neq {neq_functions}"
+            if len(eq_functions) == len(all_functions):
+                # All functions which we do not want to ignore are equal.
+                result = "Eq"
+            elif len(neq_functions) == len(all_functions):
+                # All functions which we do not want to ignore are non-equal.
+                result = "Neq"
+            else:
+                # Still some functions are equal and some non-equal.
+                result = f"{len(eq_functions)} Eq {eq_functions}, " + \
+                        f"{len(neq_functions)} Neq {neq_functions}"
         correct = str(True if result == self.expected_result else False)
         changes = self.program_info.get_description() if self.program_info \
             else ""
@@ -313,13 +352,26 @@ class AnalysisResult:
         """
         with open(self.result_dir / "diffkemp-out.yaml", "r") as file:
             yaml_result = yaml.safe_load(file)
-        return [function["function"] for function in yaml_result["results"]]
+        fun_list = [
+            function["function"] for function in yaml_result["results"]]
+        # filter out not changed funs for aggregated programs
+        return self._remove_funs_to_ignore(fun_list)
 
     def _get_all_funs(self):
         """Returns list of all functions for an EqBench program."""
         with open(Path(self.old_build_dir, "snapshot.yaml"), "r") as file:
             snapshot_yaml = yaml.safe_load(file)
-        return [function["name"] for function in snapshot_yaml[0]["list"]]
+        fun_list = [function["name"] for function in snapshot_yaml[0]["list"]]
+        return self._remove_funs_to_ignore(fun_list)
+
+    def _remove_funs_to_ignore(self, fun_list):
+        """Removes functions from the list which should not be compared."""
+        relative_path = "/".join(self.result_dir.parts[-3:])
+        if self.benchmark_type == "aggregated" and \
+           relative_path in AGGREGATED_FUNS_TO_IGNORE:
+            fun_list = [item for item in fun_list if item not in
+                        AGGREGATED_FUNS_TO_IGNORE[relative_path]]
+        return fun_list
 
 
 if __name__ == "__main__":
