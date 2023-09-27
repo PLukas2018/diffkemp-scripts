@@ -289,9 +289,20 @@ class EqBenchRun:
                     aggregated[index] += 1
                 elif row[TYPE] == "function-level":
                     function_level[index] += 1
-        print("Results")
-        print("=" * 80)
-        print(tabulate.tabulate([aggregated, function_level], headers=header))
+        patterns = 'all-disabled' if self.disable_patterns else 'default'
+        clang_options = " ".join(
+            [option.strip() for option in self.clang_options])
+        report = \
+            f"### Results ({patterns} patterns, " + \
+            f"`clang -S -emit-llvm -g {clang_options}`)\n\n" + \
+            tabulate.tabulate([aggregated, function_level], headers=header,
+                              tablefmt="pipe")
+        print(report)
+
+        # Saving summarisation of results to file
+        report += f"\n\n(only-compare: {self.only_compare})\n"
+        with open(Path(self.output_dir, "result.md"), "w") as file:
+            print(report, file=file)
 
 
 class AnalysisResult:
