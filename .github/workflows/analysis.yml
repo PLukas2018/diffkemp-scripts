@@ -1,0 +1,109 @@
+name: Analysis of DiffKemp equivalence checking
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'The repository to run on'
+        required: false
+        default: 'diffkemp/diffkemp'
+        type: string
+      ref:
+        description: 'The branch, tag or SHA of DiffKemp to run'
+        required: false
+        default: 'master'
+        type: string
+  push:
+
+jobs:
+  EqBench:
+    runs-on: ubuntu-latest
+    env:
+      llvm: 16
+      CC: gcc-9
+      CXX: g++-9
+
+    steps:
+      - if: ${{ github.event_name == 'push'}}
+        uses: actions/checkout@v4
+        with:
+          repository: diffkemp/diffkemp
+          ref: master
+          path: ${{ github.workspace }}/diffkemp
+      - if: ${{ github.event_name == 'workflow_dispatch'}}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          path: ${{ github.workspace }}/diffkemp
+      - uses: actions/checkout@v4
+        with:
+          path: ${{ github.workspace }}/diffkemp/EqBench-workflow
+      - uses: actions/checkout@v4
+        with:
+          repository: shrBadihi/EqBench
+          ref: main
+          path: ${{ github.workspace }}/EqBench
+
+      # TODO Use nix
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.9
+
+      - name: Install eqbench scripts dependencies
+        working-directory: ${{ github.workspace }}/diffkemp
+        run: pip3 install -r EqBench-workflow/requirements.txt
+
+      - name: Install Dependencies
+        working-directory: ${{ github.workspace }}/diffkemp
+        shell: bash
+        run: |
+          sudo apt-get install bc cscope libelf-dev ninja-build
+          pip install -r requirements.txt
+
+      - name: Install LLVM
+        run: |
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo add-apt-repository "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-${llvm} main"
+          sudo apt-get update
+          sudo apt-get install llvm-${llvm} llvm-${llvm}-dev clang-${llvm}
+          sudo ln -s /usr/lib/llvm-${llvm} /usr/local/lib/llvm
+          echo "/usr/lib/llvm-${llvm}/bin" >> $GITHUB_PATH
+
+      - name: Prepare Build Environment
+        working-directory: ${{ github.workspace }}/diffkemp
+        run: mkdir -p build
+
+      - name: CMake
+        working-directory: ${{ github.workspace }}/diffkemp
+        shell: bash
+        run: cmake -B build -GNinja -DVENDOR_GTEST=On
+
+      - name: Build
+        working-directory: ${{ github.workspace }}/diffkemp
+        run: ninja -C build
+
+      - name: Install
+        working-directory: ${{ github.workspace }}/diffkemp
+        run: pip3 install -e .
+
+      - name: Try to run eqbench analysis
+        working-directory: ${{ github.workspace }}/diffkemp
+        run: |
+          echo -e "# EqBench results\n\n" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ github.event_name }}" = "workflow_dispatch" ]]; then
+            echo "- repo: ${{ inputs.repository }}" >> $GITHUB_STEP_SUMMARY
+            echo "- ref: ${{ inputs.ref }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- repo: diffkemp/diffkemp" >> $GITHUB_STEP_SUMMARY
+            echo "- ref: master" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo -e "\n\n" >> $GITHUB_STEP_SUMMARY
+          python3 EqBench-workflow/analysis compare-multiple tmp ${{ github.workspace }}/EqBench
+          echo -e "\n\n# Results by benchmarks for -O2 with default patterns\n\n" >> $GITHUB_STEP_SUMMARY
+          python3 EqBench-workflow/analysis by-benchmarks tmp/default-opt-O2-default-patterns >> $GITHUB_STEP_SUMMARY
+
+
+
