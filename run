@@ -132,6 +132,7 @@ class EqBenchRun:
         self.only_compare = args.only_compare
         self.disable_patterns = args.disable_patterns
         self.results_file_path = Path(self.output_dir, "eqbench-results.csv")
+        self.clang_options = args.add_clang_options
         self._run()
         self.report()
 
@@ -187,6 +188,8 @@ class EqBenchRun:
             file,
             output_dir
         ]
+        for option in self.clang_options:
+            build_command.append(f"--clang-append={option.strip()}")
         subprocess.check_call(build_command, stdout=subprocess.DEVNULL)
 
     def _compare_snapshots(self, neq, results_file):
@@ -389,5 +392,10 @@ if __name__ == "__main__":
     parser.add_argument("--disable-patterns", action="store_true",
                         help="disable all built-in patterns in comparison, " +
                         "default patterns are used by default")
+    parser.add_argument("--add-clang-options", action="extend", type=str,
+                        default=[], nargs="+",
+                        help="adds options to clang when creating snapshots" +
+                        "(for options containing dashes insert space before" +
+                        "or after option)")
     args = parser.parse_args()
     EqBenchRun(args)
