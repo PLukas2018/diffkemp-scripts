@@ -133,6 +133,7 @@ class EqBenchRun:
         self.disable_patterns = args.disable_patterns
         self.results_file_path = Path(self.output_dir, "eqbench-results.csv")
         self.clang_options = args.add_clang_options
+        self.output_src_file_paths = args.output_src_file_paths
         self._run()
         self.report()
 
@@ -153,8 +154,13 @@ class EqBenchRun:
         if self.cmp_dir.exists():
             shutil.rmtree(self.cmp_dir)
         with open(self.results_file_path, "w") as results_file:
-            print("type;benchmark;program;expected;result;correct;changes",
-                  file=results_file)
+            if self.output_src_file_paths:
+                print("type;benchmark;program;expected;result;" +
+                      "correct;changes;old_src;new_src",
+                      file=results_file)
+            else:
+                print("type;benchmark;program;expected;result;correct;changes",
+                      file=results_file)
             print("\ta) Comparing Eq snapshots")
             self._compare_snapshots(neq=False, results_file=results_file)
             print("\tb) Comparing Neq snapshots")
@@ -239,7 +245,10 @@ class EqBenchRun:
                                 old_build_dir=old_build_dir,
                                 result_dir=result_dir,
                                 output=output)
-
+        if self.output_src_file_paths:
+            result = str(result) + \
+                      f";{next(Path.glob(src_dir, 'old*.c'))}" + \
+                      f";{next(Path.glob(src_dir, 'new*.c'))}"
         print(str(result), file=results_file)
 
     def _compare(self, old_build_dir, new_build_dir, output_dir,
@@ -408,5 +417,7 @@ if __name__ == "__main__":
                         help="adds options to clang when creating snapshots" +
                         "(for options containing dashes insert space before" +
                         "or after option)")
+    parser.add_argument("--output-src-file-paths", action="store_true",
+                        help="saves src files paths to csv")
     args = parser.parse_args()
     EqBenchRun(args)
