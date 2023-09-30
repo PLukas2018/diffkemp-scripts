@@ -29,6 +29,9 @@
 #     - `function-level`: for projects/programs which contains change in
 #       a single function the comparison is done on function-level
 #       (compared function is the one which contains changes),
+#     - `program-level`: for projects/programs which contains change in
+#       a single function but the comparison have to be done on program-level
+#       (compared function doesn't have changes but calls function which does),
 #   - `benchmark`, `program`: represents name of benchmark and program,
 #   - `expected`: represents expected result of comparison (Eq/Neq)
 #   - `result`: represents result of DiffKemp comparison (Eq/Neq),
@@ -38,6 +41,7 @@
 #   - `changes`: list of changes which were done in the program.
 
 from argparse import ArgumentParser
+from collections import defaultdict
 import csv
 import tabulate
 from pathlib import Path
@@ -98,6 +102,12 @@ class ProgramInfo:
         with open(Path(src_dir, DESCRIPTION_FILE_NAME), "r") as file:
             info = json.load(file)
         self.fun_to_compare = info["function name"]
+        # For some programs (eg programs for CLEVER benchmark)
+        # is necessary to do program-level analysis.
+        # For these programs the name of function which should be compared
+        # is probably specified after a dot in program name.
+        self.program_fun = info["program name"].split(".")[1] \
+            if len(info["program name"].split(".")) == 2 else None
         self.changes = info["changes"]
 
     def get_description(self):
@@ -234,8 +244,16 @@ class EqBenchRun:
         # get the name of function from the information about the program
         # and compare only this function.
         function = None
+        benchmark_type = "aggregated"
         if program_info:
-            function = program_info.fun_to_compare
+            # Some functions cannot be compared on function-level but must
+            # be compared on program-level to be correctly evaluated.
+            if program_info.program_fun:
+                benchmark_type = "program-level"
+                function = program_info.program_fun
+            else:
+                benchmark_type = "function-level"
+                function = program_info.fun_to_compare
 
         output = self._compare(str(old_build_dir), str(new_build_dir),
                                str(result_dir), function=function)
@@ -244,7 +262,8 @@ class EqBenchRun:
                                 expected_result=expected_result,
                                 old_build_dir=old_build_dir,
                                 result_dir=result_dir,
-                                output=output)
+                                output=output,
+                                benchmark_type=benchmark_type)
         if self.output_src_file_paths:
             result = str(result) + \
                       f";{next(Path.glob(src_dir, 'old*.c'))}" + \
@@ -278,15 +297,16 @@ class EqBenchRun:
         header = ["Type",
                   "Eq correct", "Eq not correct",
                   "Neq correct", "Neq not correct"]
-        aggregated = ["aggregated", 0, 0, 0, 0]
-        function_level = ["function-level", 0, 0, 0, 0]
+        # dict benchmark_type: [eq correct, eq not correct, neq correct,
+        #                       neq not correct]
+        results = defaultdict(lambda: [0, 0, 0, 0])
         # mapping result (csv fields `expected:correct`)` to index
         # corresponding to header
         mapping = {
-            "Eq:True": 1,
-            "Eq:False": 2,
-            "Neq:True": 3,
-            "Neq:False": 4,
+            "Eq:True": 0,
+            "Eq:False": 1,
+            "Neq:True": 2,
+            "Neq:False": 3,
         }
         with open(self.results_file_path, "r") as file:
             reader = csv.reader(file, delimiter=";")
@@ -294,18 +314,17 @@ class EqBenchRun:
             next(reader)
             for row in reader:
                 index = mapping[f"{row[EXPECTED]}:{row[CORRECT]}"]
-                if row[TYPE] == "aggregated":
-                    aggregated[index] += 1
-                elif row[TYPE] == "function-level":
-                    function_level[index] += 1
+                benchmark_type = row[TYPE]
+                results[benchmark_type][index] += 1
         patterns = 'all-disabled' if self.disable_patterns else 'default'
         clang_options = " ".join(
             [option.strip() for option in self.clang_options])
         report = \
             f"### Results ({patterns} patterns, " + \
             f"`clang -S -emit-llvm -g {clang_options}`)\n\n" + \
-            tabulate.tabulate([aggregated, function_level], headers=header,
-                              tablefmt="pipe")
+            tabulate.tabulate([[benchmark_type, *result]
+                               for benchmark_type, result in results.items()],
+                              headers=header, tablefmt="pipe")
         print(report)
 
         # Saving summarisation of results to file
@@ -317,7 +336,16 @@ class EqBenchRun:
 class AnalysisResult:
     """Result of evaluation of DiffKemp comparison of EqBench program."""
     def __init__(self, program_info, expected_result, old_build_dir,
-                 result_dir, output):
+                 result_dir, output, benchmark_type):
+        """
+        :param program_info: Info about benchmark program if it exists or None.
+        :param expected_result: The expected result (Eq/Neq) of the comparison.
+        :param old_build_dir: Path to snapshot with old version of the program.
+        :param result_dir: Path to dir containing results of the comparison.
+        :param output: Stdout output of `diffkemp compare` for the program.
+        :param benchmark_type: Type of benchmark "aggregate", "function-level",
+                               "program-level".
+        """
         self.expected_result = expected_result
         self.program_info = program_info
         self.old_build_dir = old_build_dir
@@ -325,8 +353,7 @@ class AnalysisResult:
         self.total_symbols = REGEX_TOTAL.search(output).group(1)
         self.eq_symbols = REGEX_EQUAL.search(output).group(1)
         self.neq_symbols = REGEX_NEQUAL.search(output).group(1)
-        self.benchmark_type = "function-level" if self.program_info \
-            else "aggregated"
+        self.benchmark_type = benchmark_type
         self.benchmark_name, self.program_name = \
             str(result_dir).split("/")[-3:-1]
 
