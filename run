@@ -43,6 +43,7 @@
 from argparse import ArgumentParser
 from collections import defaultdict
 import csv
+from diffkemp.llvm_ir.kernel_llvm_source_builder import KernelLlvmSourceBuilder
 import tabulate
 from pathlib import Path
 from progressbar import ProgressBar
@@ -51,6 +52,8 @@ import re
 import shutil
 import subprocess
 import yaml
+
+opt_llvm = KernelLlvmSourceBuilder._opt_llvm
 
 # regex for getting info from diffkemp report stat
 REGEX_TOTAL = re.compile("^Total symbols: *(\\d+)", flags=re.MULTILINE)
@@ -144,6 +147,7 @@ class EqBenchRun:
         self.results_file_path = Path(self.output_dir, "eqbench-results.csv")
         self.clang_options = args.add_clang_options
         self.output_src_file_paths = args.output_src_file_paths
+        self.build_kernel_opt_llvm = args.build_kernel_opt_llvm
         self._run()
         self.report()
 
@@ -206,7 +210,13 @@ class EqBenchRun:
         ]
         for option in self.clang_options:
             build_command.append(f"--clang-append={option.strip()}")
+        if self.build_kernel_opt_llvm:
+            build_command.append("--clang-append=-Xclang")
+            build_command.append("--clang-append=-disable-llvm-passes")
         subprocess.check_call(build_command, stdout=subprocess.DEVNULL)
+        llvm_file_path = str(next(Path(output_dir).glob("*.ll")))
+        if self.build_kernel_opt_llvm:
+            opt_llvm(llvm_file_path)
 
     def _compare_snapshots(self, neq, results_file):
         """Compares benchmarks snapshots of old and new programs version.
@@ -321,7 +331,10 @@ class EqBenchRun:
             [option.strip() for option in self.clang_options])
         report = \
             f"### Results ({patterns} patterns, " + \
-            f"`clang -S -emit-llvm -g {clang_options}`)\n\n" + \
+            f"`clang -S -emit-llvm -g {clang_options}" + \
+            (" -Xclang -disable-llvm-passes` + kernel opt llvm"
+                if self.build_kernel_opt_llvm
+                else '`') + ")\n\n" + \
             tabulate.tabulate([[benchmark_type, *result]
                                for benchmark_type, result in results.items()],
                               headers=header, tablefmt="pipe")
@@ -446,5 +459,8 @@ if __name__ == "__main__":
                         "or after option)")
     parser.add_argument("--output-src-file-paths", action="store_true",
                         help="saves src files paths to csv")
+    parser.add_argument("--build-kernel-opt-llvm", action="store_true",
+                        help="use only certain llvm passes " +
+                        "(same as for `diffkemp build-kernel`)")
     args = parser.parse_args()
     EqBenchRun(args)
