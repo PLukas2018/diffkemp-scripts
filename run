@@ -2,6 +2,8 @@
 # Builds EqBench programs and compares them,
 # returns results how much successful was the comparison.
 #
+# Requirements: tabulate, progressbar
+#
 # References:
 # - EqBench paper:
 #   https://people.ece.ubc.ca/mjulia/publications/EQBench_2021.pdf
@@ -16,7 +18,7 @@
 # 2. Run this script:
 #   `EqBench-workflow/run <path-to-EqBench>`
 #   - it creates snapshots of programs and compares them
-#   - the script informs about progress
+#   - the script informs about progress and prints result of analysis.
 # 3. Detailed results of the analysis are saved in
 #   <output-dir>/eqbench-results.csv (default `output-dir` is EqBench-results),
 #   you can filter the result for eg. with `grep`,
@@ -37,6 +39,8 @@
 #   - `correct`: True if evaluation was correct, else False,
 
 from argparse import ArgumentParser
+import csv
+import tabulate
 from pathlib import Path
 from progressbar import ProgressBar
 import json
@@ -88,6 +92,7 @@ class EqBenchRun:
         self.only_compare = args.only_compare
         self.results_file_path = Path(self.output_dir, "eqbench-results.csv")
         self._run()
+        self.report()
 
     def _run(self):
         # todo parallel run to speed things up?
@@ -208,6 +213,39 @@ class EqBenchRun:
         if function is not None:
             compare_command.extend(["--function", function])
         return subprocess.check_output(compare_command).decode("utf-8")
+
+    def report(self):
+        """Prints results of evaluation."""
+        TYPE = 0
+        EXPECTED = 3  # Eq/Neq
+        CORRECT = 5  # True/False
+
+        header = ["Type",
+                  "Eq correct", "Eq not correct",
+                  "Neq correct", "Neq not correct"]
+        aggregated = ["aggregated", 0, 0, 0, 0]
+        function_level = ["function-level", 0, 0, 0, 0]
+        # mapping result (csv fields `expected:correct`)` to index
+        # corresponding to header
+        mapping = {
+            "Eq:True": 1,
+            "Eq:False": 2,
+            "Neq:True": 3,
+            "Neq:False": 4,
+        }
+        with open(self.results_file_path, "r") as file:
+            reader = csv.reader(file, delimiter=";")
+            # skipping header
+            next(reader)
+            for row in reader:
+                index = mapping[f"{row[EXPECTED]}:{row[CORRECT]}"]
+                if row[TYPE] == "aggregated":
+                    aggregated[index] += 1
+                elif row[TYPE] == "function-level":
+                    function_level[index] += 1
+        print("Results")
+        print("=" * 80)
+        print(tabulate.tabulate([aggregated, function_level], headers=header))
 
 
 class AnalysisResult:
