@@ -90,6 +90,7 @@ class EqBenchRun:
         self.build_dir = Path(args.output_dir, BUILD_DIR)
         self.cmp_dir = Path(args.output_dir, COMPARE_DIR)
         self.only_compare = args.only_compare
+        self.disable_patterns = args.disable_patterns
         self.results_file_path = Path(self.output_dir, "eqbench-results.csv")
         self._run()
         self.report()
@@ -210,6 +211,8 @@ class EqBenchRun:
             "-o", output_dir,
             "--report-stat",
         ]
+        if self.disable_patterns:
+            compare_command.extend(["--disable-all-patterns"])
         if function is not None:
             compare_command.extend(["--function", function])
         return subprocess.check_output(compare_command).decode("utf-8")
@@ -316,5 +319,8 @@ if __name__ == "__main__":
                         help="only runs comparison, expects that " +
                         "the programs are already build " +
                         "and located in `output_dir`")
+    parser.add_argument("--disable-patterns", action="store_true",
+                        help="disable all built-in patterns in comparison, " +
+                        "default patterns are used by default")
     args = parser.parse_args()
     EqBenchRun(args)
