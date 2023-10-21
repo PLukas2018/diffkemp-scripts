@@ -148,6 +148,7 @@ class EqBenchRun:
         self.clang_options = args.add_clang_options
         self.output_src_file_paths = args.output_src_file_paths
         self.build_kernel_opt_llvm = args.build_kernel_opt_llvm
+        self.add_custom_llvm_passes = args.add_custom_llvm_passes
         self._run()
         self.report()
 
@@ -217,6 +218,10 @@ class EqBenchRun:
         llvm_file_path = str(next(Path(output_dir).glob("*.ll")))
         if self.build_kernel_opt_llvm:
             opt_llvm(llvm_file_path)
+        if self.add_custom_llvm_passes:
+            subprocess.check_call(["opt", llvm_file_path,
+                                   f"-passes={self.add_custom_llvm_passes}",
+                                   "-S", "-o", llvm_file_path])
 
     def _compare_snapshots(self, neq, results_file):
         """Compares benchmarks snapshots of old and new programs version.
@@ -332,8 +337,8 @@ class EqBenchRun:
         report = \
             f"### Results ({patterns} patterns, " + \
             f"`clang -S -emit-llvm -g {clang_options}" + \
-            (" -Xclang -disable-llvm-passes` + kernel opt llvm"
-                if self.build_kernel_opt_llvm
+            (" -Xclang -disable-llvm-passes` + opt llvm"
+                if self.build_kernel_opt_llvm or self.add_custom_llvm_passes
                 else '`') + ")\n\n" + \
             tabulate.tabulate([[benchmark_type, *result]
                                for benchmark_type, result in results.items()],
@@ -462,5 +467,7 @@ if __name__ == "__main__":
     parser.add_argument("--build-kernel-opt-llvm", action="store_true",
                         help="use only certain llvm passes " +
                         "(same as for `diffkemp build-kernel`)")
+    parser.add_argument("--add-custom-llvm-passes",
+                        help="specify llvm passes to be added")
     args = parser.parse_args()
     EqBenchRun(args)
