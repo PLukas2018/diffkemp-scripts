@@ -4,6 +4,7 @@
 import argparse
 import csv
 import os
+import pandas as pd
 import re
 import shutil
 import subprocess
@@ -195,6 +196,69 @@ def diff_2_runs(args):
     shutil.rmtree(tmp_dir)
 
 
+def get_results_by_benchmarks(dir):
+    """Returns table containing results for individual benchmarks."""
+    def create_header(row):
+        if row["expected"] == "Eq" and row["correct"] is True:
+            return "Eq/Eq"
+        if row["expected"] == "Eq" and row["correct"] is False:
+            return "Eq/Neq"
+        elif row["expected"] == "Neq" and row["correct"] is True:
+            return "Neq/Neq"
+        else:
+            return "Neq/Eq"
+
+    CHANGES_IN_ONE_FUN = "changes in one function"
+    CHANGES_IN_ALL_FUNS = "changes in all functions"
+
+    path_to_csv_file = os.path.join(dir, "eqbench-results.csv")
+
+    df = pd.read_csv(path_to_csv_file, sep=";")
+    # Renaming the program type,
+    # unifying program-level and function-level
+    df["type"] = df["type"].replace({
+        "program-level": CHANGES_IN_ONE_FUN,
+        "function-level": CHANGES_IN_ONE_FUN,
+        "aggregated": CHANGES_IN_ALL_FUNS
+    })
+
+    # Grouping results by type, benchmark and expected result,
+    # counting number of in/correct
+    df = df.groupby(["type", "benchmark", "expected"])["correct"]\
+        .value_counts().reset_index()
+    # Sorting by benchmark
+    df.sort_values(by=["benchmark"])
+    # Creating header for results
+    df['header'] = df.apply(create_header, axis=1)
+    # Now the expected and correct column can be removed
+    df.drop(columns=["expected", "correct"], inplace=True)
+
+    # Results based on types
+    one_results = df[df["type"] == CHANGES_IN_ONE_FUN]
+    all_results = df[df["type"] == CHANGES_IN_ALL_FUNS]
+    # We do not need type anymore
+    one_results = one_results.drop(columns=["type"])
+    all_results = all_results.drop(columns=["type"])
+
+    # Rotating table for better visualisation
+    one_results = pd.pivot_table(one_results, index=["benchmark"],
+                                 columns=["header"], fill_value=0)
+    all_results = pd.pivot_table(all_results, index=["benchmark"],
+                                 columns=["header"], fill_value=0)
+
+    # Dropping count column
+    one_results = one_results.droplevel(0, axis=1)
+    all_results = all_results.droplevel(0, axis=1)
+
+    # Printing results
+    print("## Results for programs with changes in one function\n")
+    print(one_results.to_markdown())
+    print()
+    print("## Results for programs with changes in all function\n")
+    print(all_results.to_markdown())
+    print()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="EqBench analyzator")
     subcommands = parser.add_subparsers()
@@ -225,6 +289,13 @@ if __name__ == "__main__":
                                    "of `compare-multiple` command.")
     total.add_argument("multiple_runs_dir")
     total.set_defaults(func=lambda args: get_total(args.multiple_runs_dir))
+
+    by_benchmark = subcommands.add_parser(
+        "by-benchmarks", help="Get results for individual benchmarks.")
+    by_benchmark.add_argument("run_dir",
+                              help="Output directory with a results of a run")
+    by_benchmark.set_defaults(
+        func=lambda args: get_results_by_benchmarks(args.run_dir))
 
     args = parser.parse_args()
     args.func(args)
