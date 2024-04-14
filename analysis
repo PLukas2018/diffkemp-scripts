@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+# Useful functions for analysing EqBench results and to create them.
+
+import argparse
+import csv
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+from tempfile import mkdtemp
+
+
+# List of different comparision which will be done.
+RUNS = [
+     # output dir, disable_patterns, optimalisation, use_build_kernel_opt
+     ["default-opt-O1-default-patterns", False, "-O1", False],
+     ["default-opt-O2-default-patterns", False, "-O2", False],
+     ["kernel-opt-O1-default-patterns", False, "-O1", True],
+]
+
+
+# Indexes to RUNS items array
+RUN_FILE = 0
+RUN_DISABLE_PATTERNS = 1
+RUN_OPTIMISATION = 2
+RUN_USE_LLVM_OPT = 3  # Kernel-build llvm passes
+
+# REGEX for extracting total results from result.md
+FUNCTION_LEVEL_PATTERN = re.compile(
+    r"^\| function-level +\| *(\d+) \| +(\d+) \| +(\d+) \| +(\d+) \|$",
+    re.MULTILINE)
+PROGRAM_LEVEL_PATTERN = re.compile(
+    r"^\| program-level +\| *(\d+) \| +(\d+) \| +(\d+) \| +(\d+) \|$",
+    re.MULTILINE)
+AGGREGATED_PATTERN = re.compile(
+    r"^\| aggregated +\| *(\d+) \| +(\d+) \| +(\d+) \| +(\d+) \|$",
+    re.MULTILINE)
+
+
+def compare_multiple(args):
+    """Creates multiple different comparision of EqBench
+    and prints results of the evaluation"""
+    output_dir = args.output_dir
+    eqbench_repo_path = args.eqbench_repo_path
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    os.mkdir(output_dir)
+    for run in RUNS:
+        command = create_command(
+            output_dir=os.path.join(output_dir, run[RUN_FILE]),
+            eqbench_repo_path=eqbench_repo_path,
+            disable_patterns=run[RUN_DISABLE_PATTERNS],
+            optimisation=run[RUN_OPTIMISATION],
+            use_build_kernel_opt_llvm=run[RUN_USE_LLVM_OPT],
+            only_compare=args.only_compare
+        )
+        subprocess.check_call(command, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL)
+    get_total(output_dir)
+
+
+def get_total(output_dir):
+    """Prints summary of evaluation for RUNS saved in output_dir."""
+    head = ["Type", "opt level", "using custom llvm passes",
+            "patterns", "eq/eq", "eq/neq", "neq/neq", "neq/eq"]
+    results = []
+    for run in RUNS:
+        result_file = os.path.join(output_dir, run[RUN_FILE], "result.md")
+        with open(result_file, "r") as file:
+            lines = file.read()
+            function_level = FUNCTION_LEVEL_PATTERN.search(lines).groups()
+            program_level = PROGRAM_LEVEL_PATTERN.search(lines).groups()
+            aggregated = AGGREGATED_PATTERN.search(lines).groups()
+        function_program_total = [str(int(f)+int(p)) for f, p in
+                                  zip(function_level, program_level)]
+        llvm_passes = "custom (build-kernel ones)" if run[RUN_USE_LLVM_OPT] \
+            else "opt level ones"
+        patterns = "all-disabled" if run[RUN_DISABLE_PATTERNS] else "default"
+
+        # Changes in one function
+        # Note: for CLEVER benchmark and for REVE/triangle is done
+        #       program-level analysis (it was done for this purpose)
+        result = ["changes only in one function", run[RUN_OPTIMISATION],
+                  llvm_passes, patterns]
+        result.extend(function_program_total)
+        results.append(result)
+
+        # Changes in multiple functions
+        result = ["changes in all functions", run[RUN_OPTIMISATION],
+                  llvm_passes, patterns]
+        result.extend(aggregated)
+        results.append(result)
+    _print_total_results(head, results)
+
+
+def _print_total_results(head, results):
+    """Prints total results to stdout."""
+    print(";".join(head))
+    for result in results:
+        print(";".join(result))
+
+
+def create_command(output_dir, eqbench_repo_path,
+                   disable_patterns=False, optimisation="-O0",
+                   use_build_kernel_opt_llvm=False,
+                   only_compare=False):
+    """Creates command for running EqBench benchmark (with eqbench_scripts/run)
+    :param output_dir: path where to save results
+    :param eqbench_repo_path: path to EqBench sources
+    :param disable_patterns: true to disable all patterns
+    :param optimisation: level of optimisation for compilation
+    :param use_build_kernel_opt_llvm: use passes which are used in build-kernel
+    """
+    run_script = Path(Path(__file__).parent, "run")
+    command = [run_script, eqbench_repo_path, "-o",
+               output_dir]
+    if disable_patterns:
+        command.append("--disable-patterns")
+    if optimisation:
+        command.append(f"--add-clang-options={optimisation}")
+    if use_build_kernel_opt_llvm:
+        command.append("--build-kernel-opt-llvm")
+    if only_compare:
+        command.append("--only-compare")
+    return command
+
+
+def get_incorect(output_dir):
+    """Returns csv optput with all incorectly evaluated programs
+    from all runs saved in output_dir"""
+    TYPE = 0
+    CORRECT = 5
+    incorrect = set()
+    for run in RUNS:
+        results_path = \
+            os.path.join(output_dir, run[RUN_FILE], "eqbench-results.csv")
+        with open(results_path, "r") as file:
+            reader = csv.reader(file, delimiter=";")
+            head = next(reader)
+            for line in reader:
+                if line[TYPE] in ["function-level", "program-level"] \
+                   and line[CORRECT] == "False":
+                    incorrect.add(";".join(line))
+    print(";".join(head))
+    for line in incorrect:
+        print(line)
+
+
+def diff_2_multiruns(args):
+    """Show differences between 2 saved outputs of compare-multiple command"""
+    dir1 = args.old_run_dir
+    dir2 = args.new_run_dir
+    tmp_dir = mkdtemp()
+    dir1_tmp = Path(tmp_dir, Path(dir1).name)
+    dir1_tmp.mkdir()
+    dir2_tmp = Path(tmp_dir, Path(dir2).name)
+    dir2_tmp.mkdir()
+    for run in RUNS:
+        file1 = str(Path(dir1, run[RUN_FILE], "eqbench-results.csv"))
+        file2 = str(Path(dir2, run[RUN_FILE], "eqbench-results.csv"))
+        output1 = str(Path(dir1_tmp, run[RUN_FILE]).with_suffix(".csv"))
+        output2 = str(Path(dir2_tmp, run[RUN_FILE]).with_suffix(".csv"))
+
+        p1 = subprocess.Popen(("cut", f"{file1}", "-d", ";", "-f", "1-6"),
+                              stdout=subprocess.PIPE)
+        subprocess.check_call(["sort", "-o", f"{output1}"], stdin=p1.stdout)
+        p1.wait()
+        p2 = subprocess.Popen(("cut", f"{file2}", "-d", ";", "-f", "1-6"),
+                              stdout=subprocess.PIPE)
+        subprocess.check_call(["sort", "-o", f"{output2}"], stdin=p2.stdout)
+        p2.wait()
+    os.system(f"meld {str(dir1_tmp)} {str(dir2_tmp)}")
+    shutil.rmtree(tmp_dir)
+
+
+def diff_2_runs(args):
+    """Show difference between 2 runs of `run` program."""
+    dir1 = args.old_run_dir
+    dir2 = args.new_run_dir
+    tmp_dir = mkdtemp()
+    file1 = str(Path(dir1, "eqbench-results.csv"))
+    file2 = str(Path(dir2, "eqbench-results.csv"))
+    output1 = str(Path(tmp_dir, Path(dir1).name))
+    output2 = str(Path(tmp_dir, Path(dir2).name))
+    p1 = subprocess.Popen(("cut", f"{file1}", "-d", ";", "-f", "1-6"),
+                          stdout=subprocess.PIPE)
+    subprocess.check_call(["sort", "-o", f"{output1}"], stdin=p1.stdout)
+    p1.wait()
+    p2 = subprocess.Popen(("cut", f"{file2}", "-d", ";", "-f", "1-6"),
+                          stdout=subprocess.PIPE)
+    subprocess.check_call(["sort", "-o", f"{output2}"], stdin=p2.stdout)
+    p2.wait()
+    os.system(f"meld {str(output1)} {str(output2)}")
+    shutil.rmtree(tmp_dir)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(prog="EqBench analyzator")
+    subcommands = parser.add_subparsers()
+
+    cmp_mul = subcommands.add_parser("compare-multiple",
+                                     help="Compares EqBench " +
+                                     "programs with different options.")
+    cmp_mul.add_argument("output_dir", help="directory to save outputs")
+    cmp_mul.add_argument("eqbench_repo_path", help="path to EqBench sources")
+    cmp_mul.add_argument("--only-compare", action="store_true", default=False,
+                         help="does not build, programs should")
+    cmp_mul.set_defaults(func=compare_multiple)
+
+    diff2m = subcommands.add_parser("diff-2-multiruns", help="show diffs " +
+                                    "of two outputs of `compare multiple`" +
+                                    "command")
+    diff2m.add_argument("old_run_dir")
+    diff2m.add_argument("new_run_dir")
+    diff2m.set_defaults(func=diff_2_multiruns)
+
+    diff2r = subcommands.add_parser("diff-2-runs", help="Show diff " +
+                                    "of 2 outputs of `run` program.")
+    diff2r.add_argument("old_run_dir")
+    diff2r.add_argument("new_run_dir")
+    diff2r.set_defaults(func=diff_2_runs)
+
+    total = subcommands.add_parser("get-total", help="Get summary " +
+                                   "of `compare-multiple` command.")
+    total.add_argument("multiple_runs_dir")
+    total.set_defaults(func=lambda args: get_total(args.multiple_runs_dir))
+
+    args = parser.parse_args()
+    args.func(args)
