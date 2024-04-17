@@ -43,7 +43,6 @@
 from argparse import ArgumentParser
 from collections import defaultdict
 import csv
-from diffkemp.llvm_ir.kernel_llvm_source_builder import KernelLlvmSourceBuilder
 import tabulate
 from pathlib import Path
 from progressbar import ProgressBar
@@ -52,8 +51,6 @@ import re
 import shutil
 import subprocess
 import yaml
-
-opt_llvm = KernelLlvmSourceBuilder._opt_llvm
 
 # regex for getting info from diffkemp report stat
 REGEX_TOTAL = re.compile("^Total symbols: *(\\d+)", flags=re.MULTILINE)
@@ -147,7 +144,7 @@ class EqBenchRun:
         self.results_file_path = Path(self.output_dir, "eqbench-results.csv")
         self.clang_options = args.add_clang_options
         self.output_src_file_paths = args.output_src_file_paths
-        self.build_kernel_opt_llvm = args.build_kernel_opt_llvm
+        self.no_opt_override = args.no_opt_override
         self.add_custom_llvm_passes = args.add_custom_llvm_passes
         self._run()
         self.report()
@@ -203,25 +200,28 @@ class EqBenchRun:
 
     def _build(self, file, output_dir):
         """Creates snapshot of C `file` and saves it to `output_dir`."""
-        build_command = [
-            "bin/diffkemp",
-            "build",
-            file,
-            output_dir
-        ]
-        for option in self.clang_options:
-            build_command.append(f"--clang-append={option.strip()}")
-        if self.build_kernel_opt_llvm:
-            build_command.append("--clang-append=-Xclang")
-            build_command.append("--clang-append=-disable-llvm-passes")
+        build_command = self.get_build_command()
+        build_command.extend([file, output_dir])
+
         subprocess.check_call(build_command, stdout=subprocess.DEVNULL)
-        llvm_file_path = str(next(Path(output_dir).glob("*.ll")))
-        if self.build_kernel_opt_llvm:
-            opt_llvm(llvm_file_path)
+
         if self.add_custom_llvm_passes:
+            llvm_file_path = str(next(Path(output_dir).glob("*.ll")))
             subprocess.check_call(["opt", llvm_file_path,
                                    f"-passes={self.add_custom_llvm_passes}",
                                    "-S", "-o", llvm_file_path])
+
+    def get_build_command(self):
+        """Creates build command, does not include src file and output dir."""
+        build_command = [
+            "bin/diffkemp",
+            "build",
+        ]
+        for option in self.clang_options:
+            build_command.append(f"--clang-append={option.strip()}")
+        if self.no_opt_override:
+            build_command.append("--no-opt-override")
+        return build_command
 
     def _compare_snapshots(self, neq, results_file):
         """Compares benchmarks snapshots of old and new programs version.
@@ -291,17 +291,24 @@ class EqBenchRun:
         :param function: Name of function to compare,
                          if it is None than it compares all functions.
         """
-        compare_command = [
-            "bin/diffkemp", "compare",
+        compare_command = self.get_compare_command()
+        compare_command.extend([
             old_build_dir, new_build_dir,
             "-o", output_dir,
             "--report-stat",
-        ]
-        if self.disable_patterns:
-            compare_command.extend(["--disable-all-patterns"])
+        ])
         if function is not None:
             compare_command.extend(["--function", function])
         return subprocess.check_output(compare_command).decode("utf-8")
+
+    def get_compare_command(self):
+        """Based on program arguments creates compare command."""
+        compare_command = [
+            "bin/diffkemp", "compare",
+        ]
+        if self.disable_patterns:
+            compare_command.extend(["--disable-all-patterns"])
+        return compare_command
 
     def report(self):
         """Prints results of evaluation."""
@@ -331,18 +338,17 @@ class EqBenchRun:
                 index = mapping[f"{row[EXPECTED]}:{row[CORRECT]}"]
                 benchmark_type = row[TYPE]
                 results[benchmark_type][index] += 1
-        patterns = 'all-disabled' if self.disable_patterns else 'default'
-        clang_options = " ".join(
-            [option.strip() for option in self.clang_options])
-        report = \
-            f"### Results ({patterns} patterns, " + \
-            f"`clang -S -emit-llvm -g {clang_options}" + \
-            (" -Xclang -disable-llvm-passes` + opt llvm"
-                if self.build_kernel_opt_llvm or self.add_custom_llvm_passes
-                else '`') + ")\n\n" + \
-            tabulate.tabulate([[benchmark_type, *result]
-                               for benchmark_type, result in results.items()],
-                              headers=header, tablefmt="pipe")
+        report = f"""### Results
+
+- snapshots created using: `{" ".join(self.get_build_command())}`
+- snapshots compared using: `{" ".join(self.get_compare_command())}`
+"""
+        if self.add_custom_llvm_passes:
+            report += "- + custom passes were run"
+        report += tabulate.tabulate(
+            [[benchmark_type, *result]
+             for benchmark_type, result in results.items()],
+            headers=header, tablefmt="pipe")
         print(report)
 
         # Saving summarisation of results to file
@@ -464,9 +470,9 @@ if __name__ == "__main__":
                         "or after option)")
     parser.add_argument("--output-src-file-paths", action="store_true",
                         help="saves src files paths to csv")
-    parser.add_argument("--build-kernel-opt-llvm", action="store_true",
-                        help="use only certain llvm passes " +
-                        "(same as for `diffkemp build-kernel`)")
+    parser.add_argument("--no-opt-override", action="store_true",
+                        help="use optimization options provided with " +
+                        "--add-clang-options")
     parser.add_argument("--add-custom-llvm-passes",
                         help="specify llvm passes to be added")
     args = parser.parse_args()

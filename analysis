@@ -120,8 +120,8 @@ def create_command(output_dir, eqbench_repo_path,
         command.append("--disable-patterns")
     if optimisation:
         command.append(f"--add-clang-options={optimisation}")
-    if use_build_kernel_opt_llvm:
-        command.append("--build-kernel-opt-llvm")
+    if not use_build_kernel_opt_llvm:
+        command.append("--no-opt-override")
     if only_compare:
         command.append("--only-compare")
     return command
