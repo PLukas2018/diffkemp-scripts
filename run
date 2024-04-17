@@ -50,6 +50,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import yaml
 
 # regex for getting info from diffkemp report stat
@@ -155,14 +156,14 @@ class EqBenchRun:
             if self.output_dir.exists():
                 shutil.rmtree(self.output_dir)
             # Creating snapshots
-            print("1) Creating snapshots:")
-            print("\ta) Creating old snapshots:")
+            print("1) Creating snapshots:", file=sys.stderr)
+            print("\ta) Creating old snapshots:", file=sys.stderr)
             self._create_snapshots(new=False)
-            print("\tb) Creating new snapshots:")
+            print("\tb) Creating new snapshots:", file=sys.stderr)
             self._create_snapshots(new=True)
 
         # Comparing snapshots and writing results to file
-        print("2) Comparing snapshots")
+        print("2) Comparing snapshots", file=sys.stderr)
         if self.cmp_dir.exists():
             shutil.rmtree(self.cmp_dir)
         with open(self.results_file_path, "w") as results_file:
@@ -173,9 +174,9 @@ class EqBenchRun:
             else:
                 print("type;benchmark;program;expected;result;correct;changes",
                       file=results_file)
-            print("\ta) Comparing Eq snapshots")
+            print("\ta) Comparing Eq snapshots", file=sys.stderr)
             self._compare_snapshots(neq=False, results_file=results_file)
-            print("\tb) Comparing Neq snapshots")
+            print("\tb) Comparing Neq snapshots", file=sys.stderr)
             self._compare_snapshots(neq=True, results_file=results_file)
         print(f"\n\nResults are written to {str(self.results_file_path)}\n\n")
 
