@@ -8,8 +8,21 @@
   Repositories (MSR), data showcase, pp. 610-614, 2021.
 - Dataset is available from <https://github.com/shrBadihi/EqBench>.
 
+## Running using GitHub workflow
 
-## Requirements
+> [!NOTE]
+> You may need to first fork this repository to be able to run the workflow.
+
+You can use the provided [workflow](https://github.com/diffkemp/EqBench-workflow/actions/workflows/analysis.yml)
+to evaluate the correctness of DiffKemp's analysis on the programs in the
+EqBench dataset. The workflow can be manually triggered from the GitHub website.
+You will need to specify the repository/fork containing DiffKemp and the branch
+to be used for running the dataset. The evaluation results will be reported in
+the workflow summary.
+
+## Running locally
+
+### Requirements
 
 To use the scripts you need to install python requirements:
 
@@ -17,7 +30,7 @@ To use the scripts you need to install python requirements:
 pip install -r requirements.txt
 ```
 
-## Usage
+### Usage
 
 Firstly, you need to clone this repo to diffkemp repository.
 Then you can run the EqBench analysis like this (takes approximately 15 min):
